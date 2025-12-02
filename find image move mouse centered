@@ -1,0 +1,19 @@
+import pyautogui # tek monitor kullanıyor ve tuş dinleme yok
+from PIL import Image
+import pynput
+from pynput.mouse import Button, Controller
+import cv2 as cv
+
+
+im = Image.open('im.png') # Load the image değişkene
+a=pyautogui.locateOnScreen(Image.open('im.png'),confidence=0.75) # load image ve ekranda ara
+***stupid way***
+bx=str(a)[(str(a).find("left=np.int64(")+14):(str(a).find(")"))]
+by=str(a)[(str(a).find("top=np.int64(")+13):(str(a)[(str(a).find(")")+1):].find(")") + str(a).find(")"))+1]
+w=(str(a)[((str(a)).find("width=")+6):])[0:(str(a)[((str(a)).find("width=")+6):].find(","))]
+h=(str(a)[((str(a)).find("height=")+7):])[0:(str(a)[((str(a)).find("height=")+7):].find(")"))]
+pyautogui.moveTo((int(bx)+(int(w)/2)),(int(by)+(int(h)/2)))
+
+
+***better way***
+pyautogui.moveTo((int(a[0])+(int(a[2])/2)),(int(a[1])+(int(a[3])/2)))
