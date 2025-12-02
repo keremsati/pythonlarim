@@ -1,0 +1,29 @@
+#drag and select an area to capture
+r=[]
+e=[]
+
+
+
+from pynput.mouse import Listener, Button
+
+
+def on_click(x, y, button, pressed):
+    print('{0} at {1}'.format('Pressed' if pressed else 'Released',(x, y)))
+    global r
+    r.append(x)
+    global e
+    e.append(y)
+    if not pressed:
+        # Stop listener
+        return False
+
+
+# Initialize the Listener to monitor mouse clicks
+with Listener(on_click=on_click) as listener:
+    listener.join()
+
+
+print(r[0],e[0],r[1],e[1])
+area=r[0],e[0],r[1]-r[0],e[1]-e[0]
+print(area)
+
