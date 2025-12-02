@@ -1,0 +1,11 @@
+import easyocr
+reader = easyocr.Reader(['en'])
+
+def alsat():
+    base= reader.readtext('base value.png',detail=0)
+    sale= reader.readtext('sale value.png',detail=0)
+    base=int(base[0])
+    sale=int(sale[0])
+    if(base>=sale): return True
+    else: return False
+        
