@@ -1,0 +1,617 @@
+#deep recorder w new
+import tkinter as tk
+from tkinter import ttk
+import time
+import tkinter.messagebox
+import os
+import pyautogui
+import pydirectinput
+import keyboard
+from pynput import mouse
+import threading
+import subprocess
+import signal
+from tkinter import filedialog
+
+# Global variables
+is_recording = False
+is_playing = False
+file_path = "movement.txt"
+previous_pos = pyautogui.position()
+last_event_time = time.time()
+mouse_listener = None
+keyboard_hooked = False
+mouse_move_flag = False  # Default to False
+play_process = None
+emergency_stop_flag = False
+repeat_count = 0
+original_repeat_count = 0
+
+def play_a_record():
+    global is_playing, play_process, emergency_stop_flag, repeat_count, original_repeat_count
+    
+    if is_playing:
+        tk.messagebox.showwarning("Warning", "Already playing a recording!")
+        return
+    
+    if not os.path.exists(file_path):
+        tk.messagebox.showerror("Error", f"File {file_path} does not exist!")
+        return
+    
+    # Get repeat count from text box
+    try:
+        repeat_count = int(repeat_entry.get())
+        original_repeat_count = repeat_count
+    except ValueError:
+        tk.messagebox.showerror("Error", "Please enter a valid number for repeat count!")
+        return
+    
+    if repeat_count <= 0:
+        tk.messagebox.showerror("Error", "Repeat count must be greater than 0!")
+        return
+    
+    # Reset emergency stop flag
+    emergency_stop_flag = False
+    
+    # Register playback emergency stop hotkey
+    try:
+        keyboard.add_hotkey('shift+alt+d', emergency_stop_playback)
+        print("Playback emergency stop hotkey registered: Shift+Alt+D")
+    except Exception as e:
+        print(f"Failed to register playback hotkey: {e}")
+    
+    # Update UI
+    is_playing = True
+    start_button.config(state='disabled', bg='gray')
+    stop_button.config(state='disabled', bg='gray')
+    new_file_button.config(state='disabled')
+    play_button.config(state='disabled', bg='gray')
+    open_file_button.config(state='disabled')
+    repeat_entry.config(state='disabled')
+    emergency_stop_button.config(state='normal', bg='red')
+    mouse_move_checkbox.config(state='disabled')
+    status_label.config(text=f"Playing... ({repeat_count}/{original_repeat_count}) Press Shift+Alt+D to stop", fg='orange')
+    
+    # Start playing in a separate thread to avoid blocking the GUI
+    play_thread = threading.Thread(target=play_recording_thread)
+    play_thread.daemon = True
+    play_thread.start()
+
+def play_recording_thread():
+    global is_playing, play_process, emergency_stop_flag, repeat_count, original_repeat_count
+    
+    try:
+        while repeat_count > 0 and not emergency_stop_flag:
+            # Update status for current iteration
+            window.after(0, lambda: status_label.config(
+                text=f"Playing... ({repeat_count}/{original_repeat_count}) Press Shift+Alt+D to stop", 
+                fg='orange'
+            ))
+            
+            # Method 1: Using subprocess (can be terminated)
+            play_process = subprocess.Popen(['python', file_path])
+            
+            # Wait for process to complete or emergency stop
+            while play_process.poll() is None and not emergency_stop_flag:
+                time.sleep(0.1)
+            
+            # If emergency stop was triggered, terminate the process
+            if emergency_stop_flag:
+                play_process.terminate()
+                try:
+                    play_process.wait(timeout=5)  # Wait for process to terminate
+                except subprocess.TimeoutExpired:
+                    play_process.kill()  # Force kill if not responding
+                print("Playback emergency stopped")
+                break
+            else:
+                print(f"Playback iteration {original_repeat_count - repeat_count + 1} completed")
+            
+            # Decrement repeat count
+            repeat_count -= 1
+            
+            # If there are more iterations to go, wait a brief moment before next
+            if repeat_count > 0 and not emergency_stop_flag:
+                time.sleep(0.5)  # Small delay between iterations
+            
+    except Exception as e:
+        print(f"Error during playback: {e}")
+        tk.messagebox.showerror("Playback Error", f"Error during playback: {e}")
+    finally:
+        # Reset states
+        is_playing = False
+        play_process = None
+        
+        # Remove playback emergency stop hotkey
+        try:
+            keyboard.remove_hotkey('shift+alt+d')
+            print("Playback emergency stop hotkey unregistered")
+        except Exception as e:
+            print(f"Failed to remove playback hotkey: {e}")
+        
+        # Update UI in main thread
+        window.after(0, reset_ui_after_play)
+
+def reset_ui_after_play():
+    """Reset UI after playback completes or is stopped"""
+    global repeat_count, original_repeat_count
+    
+    # Reset repeat count to original value
+    repeat_count = original_repeat_count
+    repeat_entry.config(state='normal')
+    repeat_entry.delete(0, tk.END)
+    repeat_entry.insert(0, str(original_repeat_count))
+    
+    start_button.config(state='normal', bg='#4CAF50')
+    stop_button.config(state='disabled', bg='gray')
+    new_file_button.config(state='normal')
+    play_button.config(state='normal', bg='#DF8B0E')
+    open_file_button.config(state='normal')
+    emergency_stop_button.config(state='disabled', bg='gray')
+    mouse_move_checkbox.config(state='normal')
+    
+    if emergency_stop_flag:
+        status_label.config(text="Playback stopped", fg='red')
+    else:
+        status_label.config(text=f"Playback completed ({original_repeat_count} times)", fg='green')
+
+def emergency_stop_playback():
+    """Emergency stop for playback"""
+    global emergency_stop_flag, is_playing
+    
+    if is_playing:
+        emergency_stop_flag = True
+        # Update UI immediately from any thread
+        window.after(0, lambda: status_label.config(text="Stopping playback...", fg='red'))
+        print("Emergency stop triggered via hotkey")
+
+def stop_recording_hotkey():
+    """Stop recording when Shift+Alt+D is pressed during recording"""
+    global is_recording
+    
+    if is_recording:
+        print("Stop recording triggered via hotkey")
+        window.after(0, stop)  # Call stop function in main thread
+
+def open_file():
+    """Open a file dialog to choose an existing recording file"""
+    global file_path, is_recording, is_playing
+    
+    if is_recording or is_playing:
+        tk.messagebox.showwarning("Warning", "Please stop recording/playback before opening a file!")
+        return
+    
+    # Open file dialog
+    filename = filedialog.askopenfilename(
+        title="Select a recording file",
+        filetypes=[("Python files", "*.txt"), ("All files", "*.*")],
+        initialdir="."  # Start in current directory
+    )
+    
+    if filename:  # If a file was selected
+        file_path = filename
+        update_file_label()
+        print(f"File opened: {file_path}")
+        tk.messagebox.showinfo("File Opened", f"Selected file: {os.path.basename(file_path)}")
+
+# Function to get available filename
+def get_available_filename():
+    base_name = "movement.txt"
+    if not os.path.exists(base_name):
+        return base_name
+    
+    i = 2
+    while True:
+        new_name = f"movement({i}).txt"
+        if not os.path.exists(new_name):
+            return new_name
+        i += 1
+
+# Initialize file path
+file_path = get_available_filename()
+
+def update_file_label():
+    """Update the file label with current file path"""
+    file_label.config(text=f"File: {os.path.basename(file_path)}")
+
+def toggle_mouse_move():
+    """Toggle the mouse movement recording flag"""
+    global mouse_move_flag
+    mouse_move_flag = mouse_move_var.get()
+    print(f"Mouse movement recording: {mouse_move_flag}")
+
+def log_with_sleep(command):
+    """Helper function to log commands with proper sleep timing"""
+    global last_event_time
+    current_time = time.time()
+    time_since_last = current_time - last_event_time
+    
+    try:
+        with open(file_path, "a") as file:
+            if time_since_last > 0.01:  # Only log sleep if significant delay
+                file.write(f"time.sleep({time_since_last:.3f})\n")
+            file.write(f"{command}\n")
+        
+        last_event_time = current_time
+    except Exception as e:
+        print(f"Error writing to file: {e}")
+
+# Track the state of keys (pressed or not)
+key_states = {}
+
+# Combined event handler for keydown and keyup
+def on_action(event):
+    if not is_recording:
+        return
+    try:
+        if event.event_type == keyboard.KEY_DOWN:
+            on_press(event.name)
+        elif event.event_type == keyboard.KEY_UP:
+            on_release(event.name)
+    except Exception as e:
+        print(f"Error in keyboard event: {e}")
+
+# Function to log keydown events
+def on_press(key):
+    if not is_recording:
+        return
+    try:
+        if key not in key_states or not key_states[key]:
+            log_with_sleep(f"pyautogui.keyDown('{key}')")
+            key_states[key] = True
+    except Exception as e:
+        print(f"Error in key press: {e}")
+
+# Function to log keyup events
+def on_release(key):
+    if not is_recording:
+        return
+    try:
+        if key in key_states and key_states[key]:
+            log_with_sleep(f"pyautogui.keyUp('{key}')")
+            key_states[key] = False
+    except Exception as e:
+        print(f"Error in key release: {e}")
+
+# Function to log mouse click events
+def on_click(x, y, button, pressed):
+    if not is_recording:
+        return
+    try:
+        button_name = "left" if button == mouse.Button.left else "right"
+        action = "Down" if pressed else "Up"
+        pos = pyautogui.position()
+        log_with_sleep(f"pyautogui.mouse{action}(button='{button_name}', x={pos[0]}, y={pos[1]})")
+    except Exception as e:
+        print(f"Error in mouse click: {e}")
+
+# Function to log mouse scroll events
+def on_scroll(x, y, dx, dy):
+    if not is_recording:
+        return
+    try:
+        direction = 1 if dy > 0 else -1
+        pos = pyautogui.position()
+        log_with_sleep(f"pyautogui.scroll({direction}, x={pos[0]}, y={pos[1]})")
+    except Exception as e:
+        print(f"Error in mouse scroll: {e}")
+
+# Mouse movement tracking function
+def track_mouse_movement():
+    global previous_pos
+    global mouse_move_flag
+    while is_recording and mouse_move_flag:
+        try:
+            current_pos = pyautogui.position()
+            if current_pos != previous_pos:
+                log_with_sleep(f"pyautogui.moveTo({current_pos[0]}, {current_pos[1]}, _pause=False)")
+                previous_pos = current_pos
+            time.sleep(0.05)  # Reduced frequency to prevent overload
+        except Exception as e:
+            print(f"Error in mouse movement tracking: {e}")
+            time.sleep(0.1)
+
+def is_file_empty(filepath):
+    """Check if file is empty or doesn't exist"""
+    if not os.path.exists(filepath):
+        return True
+    return os.path.getsize(filepath) == 0
+
+def new_file():
+    global file_path, is_recording, is_playing
+    
+    if is_recording or is_playing:
+        tk.messagebox.showwarning("Warning", "Please stop recording/playback before creating a new file!")
+        return
+    
+    # Get new file name
+    file_path = get_available_filename()
+    
+    # Update the file label
+    update_file_label()
+    
+    # Show confirmation message
+    tk.messagebox.showinfo("New File", f"New file created: {file_path}")
+    
+    print(f"New file created: {file_path}")
+
+def start_recording_process():
+    """Start the recording process after confirmation check"""
+    global is_recording, mouse_listener, keyboard_hooked, previous_pos, last_event_time
+    
+    if is_recording or is_playing:
+        return  # Already recording or playing
+    
+    # Check if file exists and is not empty
+    if os.path.exists(file_path) and not is_file_empty(file_path):
+        # Ask for confirmation to overwrite
+        result = tk.messagebox.askyesno(
+            "Overwrite Confirmation", 
+            "Are you sure? The recording will overwrite your existing file!",
+            icon='warning'
+        )
+        if not result:
+            print("Recording cancelled by user")
+            return
+    
+    # Reset states
+    is_recording = True
+    previous_pos = pyautogui.position()
+    last_event_time = time.time()
+    key_states.clear()
+    
+    # Register stop recording hotkey
+    try:
+        keyboard.add_hotkey('shift+alt+d', stop_recording_hotkey)
+        print("Stop recording hotkey registered: Shift+Alt+D")
+    except Exception as e:
+        print(f"Failed to register recording hotkey: {e}")
+    
+    # Initialize file (this will overwrite existing content)
+    try:
+        with open(file_path, "w") as file:
+            file.write("import time\n")
+            file.write("import pyautogui\n")
+    except Exception as e:
+        print(f"Error creating file: {e}")
+        return
+    
+    # Start keyboard listener
+    if not keyboard_hooked:
+        keyboard.hook(on_action)
+        keyboard_hooked = True
+    
+    # Start mouse listener
+    mouse_listener = mouse.Listener(on_click=on_click, on_scroll=on_scroll)
+    mouse_listener.start()
+    
+    # Start mouse movement tracking in a separate thread (only if flag is True)
+    if mouse_move_flag:
+        movement_thread = threading.Thread(target=track_mouse_movement)
+        movement_thread.daemon = True
+        movement_thread.start()
+        print("Mouse movement recording: ENABLED")
+    else:
+        print("Mouse movement recording: DISABLED")
+    
+    # Update UI
+    start_button.config(state='disabled', bg='gray')
+    stop_button.config(state='normal', bg='red')
+    new_file_button.config(state='disabled')
+    play_button.config(state='disabled', bg='gray')
+    open_file_button.config(state='disabled')
+    repeat_entry.config(state='disabled')
+    emergency_stop_button.config(state='disabled', bg='gray')
+    mouse_move_checkbox.config(state='disabled')  # Disable checkbox during recording
+    status_label.config(text="Recording... Press Shift+Alt+D to stop", fg='red')
+    
+    print("Recording started")
+
+def record():
+    """Main record function that checks file status before starting"""
+    start_recording_process()
+
+def stop():
+    global is_recording, mouse_listener, keyboard_hooked
+    
+    if not is_recording:
+        return  # Not recording
+    
+    # Stop recording
+    is_recording = False
+    
+    # Stop listeners
+    if keyboard_hooked:
+        keyboard.unhook_all()
+        keyboard_hooked = False
+    
+    if mouse_listener and mouse_listener.is_alive():
+        mouse_listener.stop()
+    
+    # Remove recording stop hotkey
+    try:
+        keyboard.remove_hotkey('shift+alt+d')
+        print("Stop recording hotkey unregistered")
+    except Exception as e:
+        print(f"Failed to remove recording hotkey: {e}")
+    
+    # Update UI
+    start_button.config(state='normal', bg='#4CAF50')
+    stop_button.config(state='disabled', bg='gray')
+    new_file_button.config(state='normal')
+    play_button.config(state='normal', bg='#DF8B0E')
+    open_file_button.config(state='normal')
+    repeat_entry.config(state='normal')
+    emergency_stop_button.config(state='disabled', bg='gray')
+    mouse_move_checkbox.config(state='normal')  # Re-enable checkbox after recording
+    status_label.config(text="Stopped", fg='green')
+    
+    print("Recording stopped")
+
+def on_closing():
+    """Handle window closing"""
+    global is_recording, is_playing
+    
+    if is_playing:
+        emergency_stop_playback()
+        time.sleep(1)  # Give it a moment to stop
+    
+    if is_recording:
+        stop()
+    
+    # Clean up any remaining hotkeys
+    try:
+        keyboard.unhook_all()
+    except:
+        pass
+    
+    window.destroy()
+
+# Create GUI
+window = tk.Tk()
+window.title('Deep Window Recorder')
+window.geometry('750x350')  # Increased size for repeat count
+window.protocol("WM_DELETE_WINDOW", on_closing)
+
+# Status label
+status_label = tk.Label(
+    window,
+    text="Ready to record",
+    font=('Arial', 14),
+    fg='blue'
+)
+status_label.grid(column=0, row=0, columnspan=9, pady=10)
+
+# File path label
+file_label = tk.Label(
+    window,
+    text=f"File: {os.path.basename(file_path)}",
+    font=('Arial', 10),
+    fg='gray'
+)
+file_label.grid(column=0, row=1, columnspan=9, pady=5)
+
+# Mouse movement checkbox
+mouse_move_var = tk.BooleanVar(value=mouse_move_flag)
+mouse_move_checkbox = tk.Checkbutton(
+    window,
+    text="Record Mouse Movements",
+    variable=mouse_move_var,
+    command=toggle_mouse_move,
+    font=('Arial', 10),
+    fg='darkblue'
+)
+mouse_move_checkbox.grid(column=0, row=2, columnspan=9, pady=5)
+
+# Repeat count frame
+repeat_frame = tk.Frame(window)
+repeat_frame.grid(column=0, row=3, columnspan=9, pady=5)
+
+repeat_label = tk.Label(
+    repeat_frame,
+    text="Repeat Count:",
+    font=('Arial', 10),
+    fg='darkblue'
+)
+repeat_label.pack(side=tk.LEFT, padx=5)
+
+repeat_entry = tk.Entry(
+    repeat_frame,
+    font=('Arial', 10),
+    width=10,
+    justify='center'
+)
+repeat_entry.pack(side=tk.LEFT, padx=5)
+repeat_entry.insert(0, "1")  # Default value
+
+# Buttons
+new_file_button = tk.Button(
+    window, 
+    text="New File", 
+    command=new_file,
+    font=('Arial', 12),
+    bg='#2196F3',
+    fg='white',
+    width=10,
+    height=2
+)
+
+open_file_button = tk.Button(
+    window, 
+    text="Open File", 
+    command=open_file,
+    font=('Arial', 12),
+    bg='#9C27B0',
+    fg='white',
+    width=10,
+    height=2
+)
+
+start_button = tk.Button(
+    window, 
+    text="Record", 
+    command=record,
+    font=('Arial', 12),
+    bg='#4CAF50',
+    fg='white',
+    width=10,
+    height=2
+)
+
+stop_button = tk.Button(
+    window, 
+    text="Stop", 
+    command=stop,
+    font=('Arial', 12),
+    bg='gray',
+    fg='white',
+    state='disabled',
+    width=10,
+    height=2
+)
+
+play_button = tk.Button(
+    window, 
+    text="Play", 
+    command=play_a_record,
+    font=('Arial', 12),
+    bg="#DF8B0E",
+    fg='white',
+    width=10,
+    height=2
+)
+
+emergency_stop_button = tk.Button(
+    window, 
+    text="EMERGENCY STOP", 
+    command=emergency_stop_playback,
+    font=('Arial', 12, 'bold'),
+    bg='gray',
+    fg='white',
+    state='disabled',
+    width=15,
+    height=2
+)
+
+# Arrange buttons
+new_file_button.grid(column=1, row=4, padx=5, pady=10)
+open_file_button.grid(column=2, row=4, padx=5, pady=10)
+start_button.grid(column=3, row=4, padx=5, pady=10)
+stop_button.grid(column=4, row=4, padx=5, pady=10)
+play_button.grid(column=5, row=4, padx=5, pady=10)
+emergency_stop_button.grid(column=6, row=4, padx=5, pady=10)
+
+# Instructions
+instructions = tk.Label(
+    window,
+    text="Click 'New File' to create a new recording file.\nClick 'Open File' to select an existing recording.\nEnter repeat count and click 'Play' to replay the recording multiple times.\nClick 'Record' to start recording mouse and keyboard actions.\nPress Shift+Alt+D to stop recording or emergency stop playback.",
+    font=('Arial', 10),
+    justify='center',
+    fg='darkblue'
+)
+instructions.grid(column=0, row=5, columnspan=9, pady=20)
+
+# Initialize the file label
+update_file_label()
+
+window.mainloop()
